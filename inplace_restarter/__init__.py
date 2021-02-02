@@ -48,7 +48,7 @@ from ipykernel.kernelapp import IPKernelApp, IPythonKernel
 
 from IPython.core.usage import default_banner
 
-__version__ = "0.0.1.dev"
+__version__ = "0.0.2"
 
 NAME = "inplace_restarter"
 

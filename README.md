@@ -38,6 +38,8 @@ Unknown kernel types, does not know how to install:
   ✘ 'julia-0.6'
 ```
 
+If prompt toolkit is installed, `python -m inplace_restarter wiz` will open a wizard to install/remove from kernels.
+
 # Gotchas:
 
 Automatic install suppose that the kernelspec path on all the system this will be used is the same. 

@@ -1,10 +1,35 @@
 """A Kernel Proxy to restart your kernels in place.
 
-use the %restart magic.
-
+use the %restart magic to restart the kernel. 
 
 Adapted from MinRK's all the kernels.
+
+How does it work ?
+
+- this setup a proxy that will pass the messages back and forth between the
+  client and the kernel. 
+- when the command `%restart` is intercepted; the proxy will restart the kernel
+  instead of executing. 
+
+Installation/Removal 
+====================
+
+Installation, removal is made by modifying the existing kernelspecs.
+ - the original lauch argument are stored into a new field named
+   ``restarter_original_argv``, and arguments to start self are put in place. 
+ - when the restarter is called; it will inspect the ``resource_dir`` which is
+   given to it and infer the kernelspec that was used; open it, and use the
+   ``restarter_original_argv`` parameters to start the original kernel. 
+
+
+Remote ikernel utilisation
+==========================
+
+TODO.
+
 """
+
+from there import print
 
 import os
 import sys
@@ -28,6 +53,8 @@ __version__ = "0.0.1.dev"
 
 NAME = "inplace_restarter"
 
+RESTARTER_KEY = "restarter_original_argv"
+
 
 class SwapArgKernelManager(KernelManager):
     """
@@ -38,8 +65,18 @@ class SwapArgKernelManager(KernelManager):
     """
 
     def format_kernel_cmd(self, *args, **kwargs):
+        from pathlib import Path
+
+        data = (Path(self.kernel_spec.resource_dir) / "kernel.json").read_text()
+        print(data)
+        import json
+
+        data = json.loads(data)
+        print(data)
+        origin = data.get(RESTARTER_KEY)
+        assert isinstance(origin, list)
+        self.kernel_cmd = origin
         res = super().format_kernel_cmd(*args, **kwargs)
-        res = ["ipykernel" if x == NAME else x for x in res]
         assert NAME not in res
         return res
 
@@ -78,20 +115,23 @@ class Proxy(Kernel):
     banner = default_banner
 
     _ipr_parent = None
-    target = Unicode("wuup", config=True)
+    target = Unicode("path the the kernelspec (can be self or another one)")
+    rd = Unicode(None, config=True)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        print("RD:", self.rd)
 
         self.future_context = ctx = Context()
         self.iosub = ctx.socket(zmq.SUB)
         self.iosub.subscribe = b""
         self.shell_stream = self.shell_streams[0]
         self.kernel = None
-        if self.target is None:
+        if self.rd is None:
             raise ValueError(
-                "--Proxy.target is required when starting with inplace_restarter"
+                "--Proxy.rd is required when starting with inplace_restarter"
             )
+        self.target = os.path.join(self.rd, "kernel.json")
 
     def start(self):
         super().start()
@@ -204,11 +244,29 @@ class RestarterApp(IPKernelApp):
 
 
 from pathlib import Path
+import sys
 
-DEFAULT_COMMAND = ["-m", "ipykernel_launcher", "-f", "{connection_file}"]
-RESTARTER_COMMAND = ["-m", "inplace_restarter", "-f", "{connection_file}"]
+DEFAULT_COMMAND = [
+    sys.executable,
+    "-m",
+    "inplace_restarter",
+    "-f",
+    "{connection_file}",
+    "--Proxy.rd={resource_dir}",
+]
 
 import json
+
+
+def installed(spec):
+    orig = spec.get(RESTARTER_KEY, None)
+    if orig is None:
+        return "installable"
+    else:
+        if spec.get("argv") == DEFAULT_COMMAND:
+            return "installed"
+        else:
+            return "unknown"
 
 
 def list_target(specs):
@@ -218,14 +276,14 @@ def list_target(specs):
         path = Path(path) / "kernel.json"
         data = json.loads(path.read_text())
 
-        argv = data["argv"]
-
-        if argv[1:5] == DEFAULT_COMMAND:
+        status = installed(data)
+        if status == "installable":
             m["Installable"].append(name)
-        elif argv[1:5] == RESTARTER_COMMAND:
+        elif status == "installed":
             m["Installed"].append(name)
         else:
             m["Unknown"].append(name)
+
     if m["Installed"]:
         print("In place restarting installed on:")
         for kernel in m["Installed"]:
@@ -255,24 +313,23 @@ def install_on(name, specs):
     path = Path(specs[name]) / "kernel.json"
     data = json.loads(path.read_text())
     argv = data["argv"]
-    if not argv[1:5] == DEFAULT_COMMAND:
+    if installed(data) != "installable":
         print("not installable on ", name)
     else:
-        data["argv"][2] = "inplace_restarter"
-        data["argv"].append(f"--Proxy.target={path}")
+        data[RESTARTER_KEY] = data["argv"]
+        data["argv"] = DEFAULT_COMMAND
         path.write_text(json.dumps(data, indent=2))
 
 
 def remove_from(name, specs):
     path = Path(specs[name]) / "kernel.json"
     data = json.loads(path.read_text())
-    argv = data["argv"]
-    if not argv[1:5] == RESTARTER_COMMAND:
+    status = installed(data)
+    if status != "installed":
         print("not installed on ", name)
     else:
-        data["argv"][2] = "ipykernel_launcher"
-        new_argv = [a for a in data["argv"] if not a.startswith("--Proxy.target=")]
-        data["argv"] = new_argv
+        data["argv"] = data[RESTARTER_KEY]
+        del data[RESTARTER_KEY]
         text = json.dumps(data, indent=2)
         path.write_text(text)
 

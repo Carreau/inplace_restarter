@@ -29,7 +29,6 @@ TODO.
 
 """
 
-from there import print
 
 import os
 import sys
@@ -269,10 +268,9 @@ def installed(spec):
             return "unknown"
 
 
-def list_target(specs):
+def _list(specs):
     m = {"Installed": [], "Installable": [], "Unknown": []}
     for name, path in specs.items():
-        name = repr(name)
         path = Path(path) / "kernel.json"
         data = json.loads(path.read_text())
 
@@ -283,25 +281,30 @@ def list_target(specs):
             m["Installed"].append(name)
         else:
             m["Unknown"].append(name)
+    return m
+
+
+def list_target(specs):
+    m = _list(specs)
 
     if m["Installed"]:
         print("In place restarting installed on:")
         for kernel in m["Installed"]:
-            print(f"  ✓ {kernel}")
+            print(f"  ✓ {kernel!r}")
         print("")
         print("Use:python -m inplace_restarter remove [name,[name...]] to remove")
         print("")
     if m["Installable"]:
         print("In place restarting installable on:")
         for kernel in m["Installable"]:
-            print(f"  - {kernel}")
+            print(f"  - {kernel!r}")
         print("")
         print("Use:python -m inplace_restarter install [name,[name...]] to install")
         print("")
     if m["Unknown"]:
         print("Unknown kernel types, does not know how to install:")
         for kernel in m["Unknown"]:
-            print(f"  ✘ {kernel}")
+            print(f"  ✘ {kernel!r}")
         print("")
 
     # print(" :", name)
@@ -334,6 +337,75 @@ def remove_from(name, specs):
         path.write_text(text)
 
 
+def wiz(specs):
+    from prompt_toolkit.application.current import get_app
+    from prompt_toolkit.widgets import CheckboxList
+    from prompt_toolkit.widgets import Dialog
+    from prompt_toolkit.shortcuts.dialogs import _create_app
+    from prompt_toolkit.layout.containers import HSplit, Window
+    from prompt_toolkit.widgets import Button, Label
+
+    def checkboxlist_dialog(
+        title="",
+        text="",
+        ok_text="Ok",
+        cancel_text="Cancel",
+        values=None,
+        selected=None,
+    ):
+        """
+        Display a simple list of element the user can choose multiple values amongst.
+
+        Several elements can be selected at a time using Arrow keys and Enter.
+        The focus can be moved between the list and the Ok/Cancel button with tab.
+        """
+        if values is None:
+            values = []
+
+        def ok_handler() -> None:
+            get_app().exit(result=cb_list.current_values)
+
+        cb_list = CheckboxList(values)
+        for s in selected:
+            cb_list.current_values.append(s)
+        dialog = Dialog(
+            title=title,
+            body=HSplit(
+                [Label(text=text, dont_extend_height=True), cb_list],
+                padding=1,
+            ),
+            buttons=[
+                Button(text=ok_text, handler=ok_handler),
+                Button(text=cancel_text, handler=lambda: get_app().exit()),
+            ],
+            with_background=True,
+        )
+        style = None
+        return _create_app(dialog, style), cb_list
+
+    m = _list(specs)
+
+    results_array, cb = checkboxlist_dialog(
+        title="In place restarter:",
+        text="Select/deselect kernels on which to install, Tab navigate to OK/Cancel",
+        values=[(x, x) for x in m["Installed"] + m["Installable"]],
+        selected=m["Installed"],
+    )
+
+    final = results_array.run()
+    if final is None:
+        return
+    else:
+        for k in m["Installed"]:
+            if k not in final:
+                print("Removing from", k)
+                remove_from(k, specs)
+        for k in m["Installable"]:
+            if k in final:
+                print("Installing on", k)
+                install_on(k, specs)
+
+
 def main():
 
     if len(sys.argv) > 1 and sys.argv[1] == "install":
@@ -347,7 +419,9 @@ def main():
     elif len(sys.argv) > 1 and sys.argv[1] == "list":
         specs = dict(find_kernel_specs().items())
         list_target(specs)
-
+    elif len(sys.argv) > 1 and sys.argv[1] in ("wiz", "wizard"):
+        specs = dict(find_kernel_specs().items())
+        wiz(specs)
     else:
         RestarterApp.launch_instance()
 

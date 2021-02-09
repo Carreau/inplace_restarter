@@ -63,6 +63,10 @@ class SwapArgKernelManager(KernelManager):
     -m <us>, for -m ipykernel
     """
 
+    @property
+    def extra_env(self):
+        return None
+
     def format_kernel_cmd(self, *args, **kwargs):
         from pathlib import Path
 
@@ -119,7 +123,6 @@ class Proxy(Kernel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        print("RD:", self.rd)
 
         self.future_context = ctx = Context()
         self.iosub = ctx.socket(zmq.SUB)

@@ -231,7 +231,8 @@ class Proxy(Kernel):
     complete_request = relay_to_kernel
 
     def do_shutdown(self, restart):
-        self.kernel.manager.shutdown_kernel(now=False, restart=restart)
+        if self.kernel:  # give up if just restarted and not yes up.
+            self.kernel.manager.shutdown_kernel(now=False, restart=restart)
         return super().do_shutdown(restart)
 
 

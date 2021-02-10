@@ -84,7 +84,7 @@ original connections to the clients.
 
 # DEBUG
 
-add `"--Kernel.log_level=10"` in the kernelspec to have debug messages:
+add `"--RestarterApp.log_level=DEBUG"` in the kernelspec to have debug messages:
 
 
 ```

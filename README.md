@@ -82,6 +82,32 @@ between the original client and kernel. When it receives the command for an
 inplace restart, it will kill the underlying kernel and start a new one, leaving
 original connections to the clients. 
 
+# DEBUG
+
+add `"--Kernel.log_level=10"` in the kernelspec to have debug messages:
+
+
+```
+{
+  "argv": [
+    ".../bin/python",
+    "-m",
+    "inplace_restarter",
+    ...
+    "--RestarterApp.log_level=DEBUG"
+  ],
+  "display_name": "Python 3",
+  "language": "python",
+  "restarter_original_argv": [
+    ".../bin/python",
+    "-m",
+    "ipykernel_launcher",
+    "-f",
+    "{connection_file}"
+  ]
+}
+````
+
 
 
 

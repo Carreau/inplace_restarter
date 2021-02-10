@@ -1,25 +1,25 @@
 """A Kernel Proxy to restart your kernels in place.
 
-use the %restart magic to restart the kernel. 
+use the %restart magic to restart the kernel.
 
 Adapted from MinRK's all the kernels.
 
 How does it work ?
 
 - this setup a proxy that will pass the messages back and forth between the
-  client and the kernel. 
+  client and the kernel.
 - when the command `%restart` is intercepted; the proxy will restart the kernel
-  instead of executing. 
+  instead of executing.
 
-Installation/Removal 
+Installation/Removal
 ====================
 
 Installation, removal is made by modifying the existing kernelspecs.
  - the original lauch argument are stored into a new field named
-   ``restarter_original_argv``, and arguments to start self are put in place. 
+   ``restarter_original_argv``, and arguments to start self are put in place.
  - when the restarter is called; it will inspect the ``resource_dir`` which is
    given to it and infer the kernelspec that was used; open it, and use the
-   ``restarter_original_argv`` parameters to start the original kernel. 
+   ``restarter_original_argv`` parameters to start the original kernel.
 
 
 Remote ikernel utilisation
@@ -30,23 +30,22 @@ TODO.
 """
 
 
+import json
+
 import os
 import sys
+from pathlib import Path
 
-from tornado.ioloop import IOLoop
 
 import zmq
-from zmq.eventloop import ioloop
-from zmq.eventloop.future import Context
-
-from traitlets import Dict, Unicode
-
+from ipykernel.kernelapp import IPKernelApp
+from ipykernel.kernelbase import Kernel
+from IPython.core.usage import default_banner
 from jupyter_client import KernelManager
 from jupyter_client.kernelspec import find_kernel_specs
-from ipykernel.kernelbase import Kernel
-from ipykernel.kernelapp import IPKernelApp, IPythonKernel
-
-from IPython.core.usage import default_banner
+from tornado.ioloop import IOLoop
+from traitlets import Unicode
+from zmq.eventloop.future import Context
 
 __version__ = "0.0.4"
 
@@ -59,7 +58,8 @@ class SwapArgKernelManager(KernelManager):
     """
     Kernel manager that rewrite the start command to avoid recursion.
 
-    Indeed the original kernelspec will start us, and we will read it to start ipykernel, so we need to swap
+    Indeed the original kernelspec will start us, and we will read it to start
+    ipykernel, so we need to swap
     -m <us>, for -m ipykernel
     """
 
@@ -68,17 +68,15 @@ class SwapArgKernelManager(KernelManager):
         return None
 
     def format_kernel_cmd(self, *args, **kwargs):
-        from pathlib import Path
 
         data = (Path(self.kernel_spec.resource_dir) / "kernel.json").read_text()
-        print(data)
-        import json
 
         data = json.loads(data)
-        print(data)
         origin = data.get(RESTARTER_KEY)
         assert isinstance(origin, list)
-        self.kernel_cmd = origin
+        # self.kernel_cmd = origin
+        data = (Path(self.kernel_spec.resource_dir) / "kernel.json").read_text()
+        self.kernel_spec.argv = json.loads(data)[RESTARTER_KEY]
         res = super().format_kernel_cmd(*args, **kwargs)
         assert NAME not in res
         return res
@@ -119,23 +117,40 @@ class Proxy(Kernel):
 
     _ipr_parent = None
     target = Unicode("path the the kernelspec (can be self or another one)")
-    rd = Unicode(None, config=True)
+    rd = Unicode(None, config=True, allow_none=True)
+    resource_dir_workaround = Unicode(None, config=True, allow_none=True)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.log.setLevel(self.parent.log_level)
 
         self.future_context = ctx = Context()
         self.iosub = ctx.socket(zmq.SUB)
         self.iosub.subscribe = b""
         self.shell_stream = self.shell_streams[0]
         self.kernel = None
-        if self.rd is None:
-            raise ValueError(
-                "--Proxy.rd is required when starting with inplace_restarter"
+        self.log.debug(f"Started with resource_dir={sys.argv}")
+        self.log.debug(f"Started with resource_dir={self.rd}")
+        self.log.debug(
+            f"Started with resource_dir_workaround={self.resource_dir_workaround}"
+        )
+
+        spec_dir = self.rd
+        if spec_dir is None:
+            import warnings
+
+            spec_dir = self.resource_dir_workaround
+
+            warnings.warn(
+                "--Proxy.rd is None when starting with inplace_restarter, this "
+                "may not work properly. Falling back to the value of "
+                "resource_dir_workaround " + str(spec_dir),
+                UserWarning,
             )
-        self.target = os.path.join(self.rd, "kernel.json")
+        self.target = os.path.join(spec_dir, "kernel.json")
 
     def start(self):
+        self.log.debug("Starting restarter loop")
         super().start()
         loop = IOLoop.current()
         loop.add_callback(self.relay_iopub_messages)
@@ -149,11 +164,13 @@ class Proxy(Kernel):
 
     def start_kernel(self):
         """Start a new kernel"""
+        self.log.debug("Parent connection file: %s", self.parent.connection_file)
         base, ext = os.path.splitext(self.parent.connection_file)
         cf = "{base}-restartable{ext}".format(
             base=base,
             ext=ext,
         )
+        self.log.debug("Child connection file: %s", cf)
         manager = SwapArgKernelManager(
             kernel_name=self.target.split("/")[-2],
             session=self.session,
@@ -161,7 +178,10 @@ class Proxy(Kernel):
             connection_file=cf,
         )
         manager.start_kernel()
-        self.kernel = KernelProxy(manager=manager, shell_upstream=self.shell_stream)
+        self.kernel = KernelProxy(
+            manager=manager,
+            shell_upstream=self.shell_stream,
+        )
         self.iosub.connect(self.kernel.iopub_url)
         return [self.kernel]
 
@@ -246,9 +266,6 @@ class RestarterApp(IPKernelApp):
         return 0
 
 
-from pathlib import Path
-import sys
-
 DEFAULT_COMMAND = [
     sys.executable,
     "-m",
@@ -258,15 +275,13 @@ DEFAULT_COMMAND = [
     "--Proxy.rd={resource_dir}",
 ]
 
-import json
-
 
 def installed(spec):
     orig = spec.get(RESTARTER_KEY, None)
     if orig is None:
         return "installable"
     else:
-        if spec.get("argv") == DEFAULT_COMMAND:
+        if spec.get("argv")[1:6] == DEFAULT_COMMAND[1:6]:
             return "installed"
         else:
             return "unknown"
@@ -319,12 +334,13 @@ def list_target(specs):
 def install_on(name, specs):
     path = Path(specs[name]) / "kernel.json"
     data = json.loads(path.read_text())
-    argv = data["argv"]
     if installed(data) != "installable":
         print("not installable on ", name)
     else:
         data[RESTARTER_KEY] = data["argv"]
-        data["argv"] = DEFAULT_COMMAND
+        data["argv"] = DEFAULT_COMMAND + [
+            f"--Proxy.resource_dir_workaround={specs[name]}"
+        ]
         path.write_text(json.dumps(data, indent=2))
 
 
@@ -343,11 +359,9 @@ def remove_from(name, specs):
 
 def wiz(specs):
     from prompt_toolkit.application.current import get_app
-    from prompt_toolkit.widgets import CheckboxList
-    from prompt_toolkit.widgets import Dialog
     from prompt_toolkit.shortcuts.dialogs import _create_app
-    from prompt_toolkit.layout.containers import HSplit, Window
-    from prompt_toolkit.widgets import Button, Label
+    from prompt_toolkit.layout.containers import HSplit
+    from prompt_toolkit.widgets import Button, CheckboxList, Dialog, Label
 
     def checkboxlist_dialog(
         title="",

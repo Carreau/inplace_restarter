@@ -47,7 +47,7 @@ from tornado.ioloop import IOLoop
 from traitlets import Unicode
 from zmq.eventloop.future import Context
 
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 
 NAME = "inplace_restarter"
 

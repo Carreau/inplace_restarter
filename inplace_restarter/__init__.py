@@ -71,8 +71,6 @@ class SwapArgKernelManager(KernelManager):
     -m <us>, for -m ipykernel
     """
 
-    just_ipykernel = Bool(False, config=True)
-
     @property
     def extra_env(self):
         return None
@@ -86,11 +84,10 @@ class SwapArgKernelManager(KernelManager):
             resource_dir = None
             pass
 
-        if self.kernel_spec is None:
+        if self._kernel_spec is None:
             LOG('format command: 90')
-                LOG('format command: 92')
             self._kernel_spec = O()
-                LOG('format command: 94')
+            LOG('format command: 94')
             self.kernel_spec.argv = [
                 sys.executable,
                 "-m",

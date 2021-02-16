@@ -44,7 +44,7 @@ from IPython.core.usage import default_banner
 from jupyter_client import KernelManager
 from jupyter_client.kernelspec import find_kernel_specs
 from tornado.ioloop import IOLoop
-from traitlets import Unicode
+from traitlets import Unicode, Bool
 from zmq.eventloop.future import Context
 
 __version__ = "0.0.6"
@@ -63,20 +63,42 @@ class SwapArgKernelManager(KernelManager):
     -m <us>, for -m ipykernel
     """
 
+    just_ipykernel = Bool(False, config=True)
+
     @property
     def extra_env(self):
         return None
 
     def format_kernel_cmd(self, *args, **kwargs):
 
-        data = (Path(self.kernel_spec.resource_dir) / "kernel.json").read_text()
+        class O:
+            argv = []
+            env = []
+            resource_dir = None
+            pass
 
-        data = json.loads(data)
-        origin = data.get(RESTARTER_KEY)
-        assert isinstance(origin, list)
-        # self.kernel_cmd = origin
-        data = (Path(self.kernel_spec.resource_dir) / "kernel.json").read_text()
-        self.kernel_spec.argv = json.loads(data)[RESTARTER_KEY]
+        if self.just_ipykernel:
+            if self.kernel_spec is None:
+                self._kernel_spec = O()
+            self.kernel_spec.argv = [
+                sys.executable,
+                "-m",
+                "ipykernel_launcher",
+                "-f",
+                "{host_connection_file}",
+            ]
+            # print(self.kernel_spec.argv)
+
+        else:
+
+            data = (Path(self.kernel_spec.resource_dir) / "kernel.json").read_text()
+
+            data = json.loads(data)
+            origin = data.get(RESTARTER_KEY)
+            assert isinstance(origin, list)
+            # self.kernel_cmd = origin
+            data = (Path(self.kernel_spec.resource_dir) / "kernel.json").read_text()
+            self.kernel_spec.argv = json.loads(data)[RESTARTER_KEY]
         res = super().format_kernel_cmd(*args, **kwargs)
         assert NAME not in res
         return res
@@ -147,7 +169,10 @@ class Proxy(Kernel):
                 "resource_dir_workaround " + str(spec_dir),
                 UserWarning,
             )
-        self.target = os.path.join(spec_dir, "kernel.json")
+        if spec_dir is None:
+            self.target = "///"
+        else:
+            self.target = os.path.join(spec_dir, "kernel.json")
 
     def start(self):
         self.log.debug("Starting restarter loop")
@@ -176,6 +201,7 @@ class Proxy(Kernel):
             session=self.session,
             context=self.future_context,
             connection_file=cf,
+            parent=self,
         )
         manager.start_kernel()
         self.kernel = KernelProxy(

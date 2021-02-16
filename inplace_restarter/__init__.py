@@ -86,11 +86,10 @@ class SwapArgKernelManager(KernelManager):
             resource_dir = None
             pass
 
-        if self.just_ipykernel:
+        if self.kernel_spec is None:
             LOG('format command: 90')
-            if self.kernel_spec is None:
                 LOG('format command: 92')
-                self._kernel_spec = O()
+            self._kernel_spec = O()
                 LOG('format command: 94')
             self.kernel_spec.argv = [
                 sys.executable,
@@ -186,9 +185,9 @@ class Proxy(Kernel):
                 UserWarning,
             )
         if spec_dir is None:
-            self.target = "///"
+            self.target = "auto_ipykernel"
         else:
-            self.target = os.path.join(spec_dir, "kernel.json")
+            self.target = os.path.split(spec_dir)[-1]
 
     def start(self):
         self.log.debug("Starting restarter loop")
@@ -215,7 +214,7 @@ class Proxy(Kernel):
         )
         self.log.debug("Child connection file: %s", cf)
         manager = SwapArgKernelManager(
-            kernel_name=self.target.split("/")[-2],
+            kernel_name=self.target,
             session=self.session,
             context=self.future_context,
             connection_file=cf,
@@ -287,7 +286,7 @@ class Proxy(Kernel):
         self.log.debug(
             "Relaying %s to %s",
             parent["header"]["msg_type"],
-            self.target.split("/")[-2],
+            self.target,
         )
         self.session.send(kernel.shell, parent, ident=ident)
 

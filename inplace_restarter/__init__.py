@@ -53,6 +53,14 @@ NAME = "inplace_restarter"
 
 RESTARTER_KEY = "restarter_original_argv"
 
+import os.path
+
+def LOG(text):
+    with open(os.path.expanduser('~/restart.log'),'a') as f:
+        f.write(text)
+        f.write('\n')
+
+LOG('IMPORT ...')
 
 class SwapArgKernelManager(KernelManager):
     """
@@ -70,6 +78,7 @@ class SwapArgKernelManager(KernelManager):
         return None
 
     def format_kernel_cmd(self, *args, **kwargs):
+        LOG('format command')
 
         class O:
             argv = []
@@ -78,18 +87,23 @@ class SwapArgKernelManager(KernelManager):
             pass
 
         if self.just_ipykernel:
+            LOG('format command: 90')
             if self.kernel_spec is None:
+                LOG('format command: 92')
                 self._kernel_spec = O()
+                LOG('format command: 94')
             self.kernel_spec.argv = [
                 sys.executable,
                 "-m",
                 "ipykernel_launcher",
                 "-f",
-                "{host_connection_file}",
+                "{connection_file}",
             ]
+            LOG('format command: 100')
             # print(self.kernel_spec.argv)
 
         else:
+            LOG('format command: 104')
 
             data = (Path(self.kernel_spec.resource_dir) / "kernel.json").read_text()
 
@@ -99,7 +113,9 @@ class SwapArgKernelManager(KernelManager):
             # self.kernel_cmd = origin
             data = (Path(self.kernel_spec.resource_dir) / "kernel.json").read_text()
             self.kernel_spec.argv = json.loads(data)[RESTARTER_KEY]
+        LOG('format command: 114')
         res = super().format_kernel_cmd(*args, **kwargs)
+        LOG('format command: 116')
         assert NAME not in res
         return res
 
@@ -179,7 +195,9 @@ class Proxy(Kernel):
         super().start()
         loop = IOLoop.current()
         loop.add_callback(self.relay_iopub_messages)
+        LOG('Start kernel 198')
         self.start_kernel()
+        LOG('Start kernel 200')
 
     async def relay_iopub_messages(self):
         """Coroutine for relaying IOPub messages from all of our kernels"""
@@ -204,10 +222,12 @@ class Proxy(Kernel):
             parent=self,
         )
         manager.start_kernel()
+        LOG('Start kernel 225')
         self.kernel = KernelProxy(
             manager=manager,
             shell_upstream=self.shell_stream,
         )
+        LOG('Start kernel 230')
         self.iosub.connect(self.kernel.iopub_url)
         return [self.kernel]
 
@@ -256,7 +276,6 @@ class Proxy(Kernel):
         return res
 
     def relay_to_kernel(self, stream, ident, parent):
-
         """Relay a message to a kernel
 
         Gets the `>kernel` line off of the cell,

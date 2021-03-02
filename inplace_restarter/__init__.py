@@ -52,6 +52,7 @@ __version__ = "0.0.6"
 NAME = "inplace_restarter"
 
 RESTARTER_KEY = "restarter_original_argv"
+REMOTE_IKERNEL_KEY = "remote_ikernel_argv"
 
 import os.path
 
@@ -317,8 +318,32 @@ DEFAULT_COMMAND = [
 ]
 
 
+def remote_ikernel_installed(spec):
+    """
+    check if the spec uses remote ikernel and we are installed in the spec.
+    """
+    assert spec.get(REMOTE_IKERNEL_KEY, None) is not None, spec
+    argv = spec.get("argv")
+    kernel_cmd = None
+    for i, item in enumerate(argv):
+        if item == "--kernel_cmd":
+            kernel_cmd = argv[i + 1]
+            if "-m inplace_restart" in kernel_cmd:
+                return "Remote-Inplace"
+            elif "-m ipykernel_launcher" in kernel_cmd:
+                return "installable"
+            else:
+                return "unknown"
+
+    raise ValueError("Don't understand spec", spec)
+
+
 def installed(spec):
+    is_remote_ikernel = spec.get(REMOTE_IKERNEL_KEY, None) is not None
     orig = spec.get(RESTARTER_KEY, None)
+    if is_remote_ikernel:
+        res = remote_ikernel_installed(spec)
+        return res
     if orig is None:
         return "installable"
     else:
@@ -329,7 +354,7 @@ def installed(spec):
 
 
 def _list(specs):
-    m = {"Installed": [], "Installable": [], "Unknown": []}
+    m = {"Installed": [], "Installable": [], "Unknown": [], "Remote-Inplace": []}
     for name, path in specs.items():
         path = Path(path) / "kernel.json"
         data = json.loads(path.read_text())
@@ -337,6 +362,8 @@ def _list(specs):
         status = installed(data)
         if status == "installable":
             m["Installable"].append(name)
+        elif status == "Remote-Inplace":
+            m["Remote-Inplace"].append(name)
         elif status == "installed":
             m["Installed"].append(name)
         else:
@@ -354,6 +381,13 @@ def list_target(specs):
         print("")
         print("Use:python -m inplace_restarter remove [name,[name...]] to remove")
         print("")
+
+    if m["Remote-Inplace"]:
+        print("Remote kernel with inplace restarter")
+        for kernel in m["Remote-Inplace"]:
+            print(f"  ✓ {kernel!r}")
+        print("")
+
     if m["Installable"]:
         print("In place restarting installable on:")
         for kernel in m["Installable"]:
@@ -372,16 +406,41 @@ def list_target(specs):
     # print("✘:", name)
 
 
+def _swap_on_remote(spec, source, target):
+    """
+    modify and return he spec, swapping `source` for `target` on the remote
+    command
+    """
+    assert spec.get(REMOTE_IKERNEL_KEY, None) is not None, spec
+    argv = spec.get("argv")
+    kernel_cmd = None
+    kernel_cmd_index = None
+
+    kernel_cmd_index = argv.index("--kernel_cmd") + 1
+    kernel_cmd = argv[kernel_cmd_index]
+    assert f"-m {source}" in kernel_cmd
+
+    new_kernel_cmd = kernel_cmd.split(" ")
+    ind = new_kernel_cmd.index(source)
+    new_kernel_cmd[ind] = target
+    argv[kernel_cmd_index] = " ".join(new_kernel_cmd)
+    return spec
+
+
 def install_on(name, specs):
     path = Path(specs[name]) / "kernel.json"
     data = json.loads(path.read_text())
     if installed(data) != "installable":
         print("not installable on ", name)
     else:
-        data[RESTARTER_KEY] = data["argv"]
-        data["argv"] = DEFAULT_COMMAND + [
-            f"--Proxy.resource_dir_workaround={specs[name]}"
-        ]
+        is_remote_ikernel = data.get(REMOTE_IKERNEL_KEY, None) is not None
+        if is_remote_ikernel:
+            data = _swap_on_remote(data, "ipykernel_launcher", "inplace_restarter")
+        else:
+            data[RESTARTER_KEY] = data["argv"]
+            data["argv"] = DEFAULT_COMMAND + [
+                f"--Proxy.resource_dir_workaround={specs[name]}"
+            ]
         path.write_text(json.dumps(data, indent=2))
 
 
@@ -389,11 +448,15 @@ def remove_from(name, specs):
     path = Path(specs[name]) / "kernel.json"
     data = json.loads(path.read_text())
     status = installed(data)
-    if status != "installed":
+    if status not in ("installed", "Remote-Inplace"):
         print("not installed on ", name)
     else:
-        data["argv"] = data[RESTARTER_KEY]
-        del data[RESTARTER_KEY]
+        is_remote_ikernel = data.get(REMOTE_IKERNEL_KEY, None) is not None
+        if is_remote_ikernel:
+            data = _swap_on_remote(data, "inplace_restarter", "ipykernel_launcher")
+        else:
+            data["argv"] = data[RESTARTER_KEY]
+            del data[RESTARTER_KEY]
         text = json.dumps(data, indent=2)
         path.write_text(text)
 
@@ -447,15 +510,17 @@ def wiz(specs):
     results_array, cb = checkboxlist_dialog(
         title="In place restarter:",
         text="Select/deselect kernels on which to install, Tab navigate to OK/Cancel",
-        values=[(x, x) for x in m["Installed"] + m["Installable"]],
-        selected=m["Installed"],
+        values=[
+            (x, x) for x in m["Installed"] + m["Remote-Inplace"] + m["Installable"]
+        ],
+        selected=m["Installed"] + m["Remote-Inplace"],
     )
 
     final = results_array.run()
     if final is None:
         return
     else:
-        for k in m["Installed"]:
+        for k in m["Installed"] + m["Remote-Inplace"]:
             if k not in final:
                 print("Removing from", k)
                 remove_from(k, specs)

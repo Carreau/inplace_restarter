@@ -25,7 +25,12 @@ Installation, removal is made by modifying the existing kernelspecs.
 Remote ikernel utilisation
 ==========================
 
-TODO.
+When using remote_ikernel only ipykernel is currently supported for automatic
+installation, both the install, remove and wizard command should behave properly
+and patch the kernelspec properly. 
+
+Note that inplace_restarter must be installed in the target environment on the
+remote machine. 
 
 """
 
@@ -47,7 +52,7 @@ from tornado.ioloop import IOLoop
 from traitlets import Unicode, Bool
 from zmq.eventloop.future import Context
 
-__version__ = "0.0.6"
+__version__ = "0.0.7"
 
 NAME = "inplace_restarter"
 

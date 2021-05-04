@@ -84,6 +84,24 @@ original connections to the clients.
 
 # DEBUG
 
+## Toggle debugging during a session
+
+The `%ipr` (in place restarter) magic allow you to execute code in the Python process of the restarter:
+
+```
+%ipr debug DEBUG
+%ipr debug INFO
+%ipr debug WARNING
+```
+
+Will set the debug level to the corresponding level in the restarter process.
+The first `%ipr debug` command will add a logging handler that will send debug
+messages to the notebook frontend. 
+
+
+## Set debug level during startup:
+
+
 add `"--RestarterApp.log_level=DEBUG"` in the kernelspec to have debug messages:
 
 
@@ -109,7 +127,22 @@ add `"--RestarterApp.log_level=DEBUG"` in the kernelspec to have debug messages:
 ````
 
 
+Note that even with debug level set during startup, messages won't show in
+notebook until you issue a `%ipr debug xxxxx` command.
 
+## advance
+
+`%ipr exec <some python code>` will exec command in the context of the inplace
+restarter.
+
+
+For example
+
+```
+%ipr exec self.log.setLevel(logging.DEBUG)
+```
+
+(use `self.print` to print values when using %ipr exec)
 
 
 

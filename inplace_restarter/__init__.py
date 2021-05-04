@@ -269,7 +269,7 @@ class Proxy(Kernel):
     def handle_ipr(self, line):
         data = line[4:].lstrip()
         if data.startswith("exec "):
-            exec(data[4:])
+            exec(data[4:].lstrip())
         if data.startswith("debug "):
             if self.MH is not None:
                 self.log.addHandler(self.MH())
@@ -280,6 +280,9 @@ class Proxy(Kernel):
                 self.log.setLevel(level)
             except:
                 self.log.error("No level %s", requested_level)
+
+    def print(self, *arg):
+        self.hook(arg)
 
     def intercept_kernel(self, stream, ident, parent):
 

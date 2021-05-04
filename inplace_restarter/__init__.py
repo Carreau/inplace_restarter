@@ -170,15 +170,20 @@ class Proxy(Kernel):
         hook = ZMQDisplayHook(self.session, self.iopub_socket)
         self.hook = hook
 
+        class R:
+            def __init__(self, data):
+                self.data = data
+
+            def __repr__(self):
+                return self.data
+
         class MH(Handler):
             def __init__(self):
-                print("MY HAndelr init")
                 super().__init__(logging.DEBUG)
 
             def emit(self, record):
-                print("MY HAndelr record", record)
                 msg = self.format(record)
-                hook(msg)
+                hook(R(msg))
 
         self.log.addHandler(MH())
         print(self.log.handlers)
@@ -291,14 +296,18 @@ class Proxy(Kernel):
             parent["content"]["code"] = ""
             parent["content"]["silent"] = True
 
-        res = self.relay_to_kernel(stream, ident, parent)
+        self.relay_to_kernel(stream, ident, parent)
 
         if cell == "%restart":
+            try:
+                self.log.debug("Sending restart request to kernel manager")
+                self.kernel.manager.shutdown_kernel(now=False, restart=True)
+                self.log.debug("Setting Kernel to None")
+                self.kernel = None
+            except Exception as e:
+                self.log.error("Unknown exception restarting the kernel\n%s", e)
 
-            self.kernel.manager.shutdown_kernel(now=False, restart=True)
-            self.kernel = None
-
-        return res
+                raise
 
     def relay_to_kernel(self, stream, ident, parent):
         """Relay a message to a kernel
@@ -315,7 +324,6 @@ class Proxy(Kernel):
             self.target,
         )
         self.session.send(kernel.shell, parent, ident=ident)
-        # self.session.send(self.iopub_socket, {}, ident=self.topic)
 
     execute_request = intercept_kernel
     inspect_request = relay_to_kernel

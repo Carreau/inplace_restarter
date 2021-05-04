@@ -36,6 +36,7 @@ remote machine.
 
 
 import json
+import logging
 
 import os
 import sys
@@ -45,6 +46,7 @@ from pathlib import Path
 import zmq
 from ipykernel.kernelapp import IPKernelApp
 from ipykernel.kernelbase import Kernel
+from ipykernel.displayhook import ZMQDisplayHook
 from IPython.core.usage import default_banner
 from jupyter_client import KernelManager
 from jupyter_client.kernelspec import find_kernel_specs
@@ -76,12 +78,11 @@ class SwapArgKernelManager(KernelManager):
         return None
 
     def format_kernel_cmd(self, *args, **kwargs):
-
         class O:
             argv = []
             env = []
             resource_dir = None
-            pass
+            interrupt_mode = "signal"
 
         if self._kernel_spec is None:
             self._kernel_spec = O()
@@ -163,6 +164,24 @@ class Proxy(Kernel):
         )
 
         spec_dir = self.rd
+        from logging import Handler
+        import logging
+
+        hook = ZMQDisplayHook(self.session, self.iopub_socket)
+        self.hook = hook
+
+        class MH(Handler):
+            def __init__(self):
+                print("MY HAndelr init")
+                super().__init__(logging.DEBUG)
+
+            def emit(self, record):
+                print("MY HAndelr record", record)
+                msg = self.format(record)
+                hook(msg)
+
+        self.log.addHandler(MH())
+        print(self.log.handlers)
         if spec_dir is None:
             import warnings
 
@@ -222,12 +241,12 @@ class Proxy(Kernel):
             self.start_kernel()
         return self.kernel
 
-    def set_parent(self, ident, parent):
+    def set_parent(self, ident, parent, channel="shell"):
         # record the parent message
         self._ipr_parent = parent
-        return super().set_parent(ident, parent)
+        return super().set_parent(ident, parent, channel)
 
-    def _publish_status(self, status):
+    def _publish_status(self, status, channel, *args, **kwargs):
         """Disabling publishing status messages for relayed
 
         Status messages will be relayed from the actual kernels.
@@ -240,13 +259,34 @@ class Proxy(Kernel):
             self.log.debug("suppressing %s status message.", status)
             return
         else:
-            return super()._publish_status(status)
+            return super()._publish_status(status, channel)
+
+    def handle_ipr(self, line):
+        data = line[4:].lstrip()
+        if data.startswith("exec "):
+            exec(data[4:])
+        if data.startswith("debug "):
+            requested_level = data[5:].strip()
+            try:
+                level = getattr(logging, requested_level)
+                self.log.setLevel(level)
+            except:
+                self.log.error("No level %s", requested_level)
 
     def intercept_kernel(self, stream, ident, parent):
 
+        self.hook.set_parent(parent)
+
         content = parent["content"]
         cell = content["code"]
-        if cell == "%restart":
+        if cell.startswith("%ipr "):
+            self.handle_ipr(cell)
+            parent["content"]["code"] = ""
+            parent["content"]["silent"] = True
+
+        elif cell == "%restart":
+            self.log.debug("Captured inplace replace")
+
             ## ask kernel to do nothing but still send an empty reply to flush ZMQ
             parent["content"]["code"] = ""
             parent["content"]["silent"] = True
@@ -275,6 +315,7 @@ class Proxy(Kernel):
             self.target,
         )
         self.session.send(kernel.shell, parent, ident=ident)
+        # self.session.send(self.iopub_socket, {}, ident=self.topic)
 
     execute_request = intercept_kernel
     inspect_request = relay_to_kernel

@@ -185,8 +185,8 @@ class Proxy(Kernel):
                 msg = self.format(record)
                 hook(R(msg))
 
-        self.log.addHandler(MH())
-        print(self.log.handlers)
+        self.MH = MH
+
         if spec_dir is None:
             import warnings
 
@@ -271,6 +271,9 @@ class Proxy(Kernel):
         if data.startswith("exec "):
             exec(data[4:])
         if data.startswith("debug "):
+            if self.MH is not None:
+                self.log.addHandler(self.MH())
+                self.MH = None
             requested_level = data[5:].strip()
             try:
                 level = getattr(logging, requested_level)

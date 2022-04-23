@@ -130,7 +130,7 @@ add `"--RestarterApp.log_level=DEBUG"` in the kernelspec to have debug messages:
 Note that even with debug level set during startup, messages won't show in
 notebook until you issue a `%ipr debug xxxxx` command.
 
-## advance
+## Advanced Usage.
 
 `%ipr exec <some python code>` will exec command in the context of the inplace
 restarter.

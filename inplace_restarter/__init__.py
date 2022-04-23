@@ -27,44 +27,59 @@ Remote ikernel utilisation
 
 When using remote_ikernel only ipykernel is currently supported for automatic
 installation, both the install, remove and wizard command should behave properly
-and patch the kernelspec properly. 
+and patch the kernelspec properly.
 
 Note that inplace_restarter must be installed in the target environment on the
-remote machine. 
+remote machine.
 
 """
 
-
+import asyncio
 import json
 import logging
-
 import os
+import os.path
 import sys
+import warnings
+from logging import Handler
 from pathlib import Path
 
-
 import zmq
+from ipykernel.displayhook import ZMQDisplayHook
 from ipykernel.kernelapp import IPKernelApp
 from ipykernel.kernelbase import Kernel
-from ipykernel.displayhook import ZMQDisplayHook
 from IPython.core.usage import default_banner
-from jupyter_client import KernelManager
+from jupyter_client import AsyncKernelManager
 from jupyter_client.kernelspec import find_kernel_specs
 from tornado.ioloop import IOLoop
-from traitlets import Unicode, Bool
+from traitlets import Unicode
 from zmq.eventloop.future import Context
 
-__version__ = "0.0.8"
+from typing import List
+
+__version__ = "0.1.0"
 
 NAME = "inplace_restarter"
 
 RESTARTER_KEY = "restarter_original_argv"
 REMOTE_IKERNEL_KEY = "remote_ikernel_argv"
 
-import os.path
+
+class Spec:
+    """
+    KernelSpec object in upstream ipykernel are accessed by attributes,
+    but the objects themselves are hard to work with. We replace then
+    with this dataclass like attribute
+
+    """
+
+    argv: List[str] = []
+    env: List[str] = []
+    resource_dir = None
+    interrupt_mode = "signal"
 
 
-class SwapArgKernelManager(KernelManager):
+class SwapArgKernelManager(AsyncKernelManager):
     """
     Kernel manager that rewrite the start command to avoid recursion.
 
@@ -78,14 +93,8 @@ class SwapArgKernelManager(KernelManager):
         return None
 
     def format_kernel_cmd(self, *args, **kwargs):
-        class O:
-            argv = []
-            env = []
-            resource_dir = None
-            interrupt_mode = "signal"
-
         if self._kernel_spec is None:
-            self._kernel_spec = O()
+            self._kernel_spec = Spec()
             self.kernel_spec.argv = [
                 sys.executable,
                 "-m",
@@ -93,7 +102,6 @@ class SwapArgKernelManager(KernelManager):
                 "-f",
                 "{connection_file}",
             ]
-            # print(self.kernel_spec.argv)
 
         else:
 
@@ -113,8 +121,10 @@ class SwapArgKernelManager(KernelManager):
 class KernelProxy(object):
     """A proxy for a single kernel
 
-
     Hooks up relay of messages on the shell channel.
+
+    This is mostly a convenience object used as many method in jupyter_client
+    access `<something>.kernel.<....>`, so we have our two layer proxy object.
     """
 
     def __init__(self, manager, shell_upstream):
@@ -132,7 +142,12 @@ class KernelProxy(object):
 
 
 class Proxy(Kernel):
-    """Kernel class for proxying ALL THE KERNELS YOU HAVE"""
+    """Kernel class for proxying all messages to the actual kernel
+
+    As it reuses a local kernel manager most of the work is to map
+    the interface betteen kernel interface and client.
+
+    """
 
     implementation = "IPython Kernel Restarter"
     implementation_version = __version__
@@ -164,31 +179,28 @@ class Proxy(Kernel):
         )
 
         spec_dir = self.rd
-        from logging import Handler
-        import logging
 
         hook = ZMQDisplayHook(self.session, self.iopub_socket)
         self.hook = hook
 
-        class R:
+        class Record:
             def __init__(self, data):
                 self.data = data
 
             def __repr__(self):
                 return self.data
 
-        class MH(Handler):
+        class MessageHandler(Handler):
             def __init__(self):
                 super().__init__(logging.DEBUG)
 
             def emit(self, record):
                 msg = self.format(record)
-                hook(R(msg))
+                hook(Record(msg))
 
-        self.MH = MH
+        self.MessageHandler = MessageHandler
 
         if spec_dir is None:
-            import warnings
 
             spec_dir = self.resource_dir_workaround
 
@@ -208,7 +220,7 @@ class Proxy(Kernel):
         super().start()
         loop = IOLoop.current()
         loop.add_callback(self.relay_iopub_messages)
-        self.start_kernel()
+        asyncio.run_coroutine_threadsafe(self.start_kernel(), loop.asyncio_loop)
 
     async def relay_iopub_messages(self):
         """Coroutine for relaying IOPub messages from all of our kernels"""
@@ -216,7 +228,7 @@ class Proxy(Kernel):
             msg = await self.iosub.recv_multipart()
             self.iopub_socket.send_multipart(msg)
 
-    def start_kernel(self):
+    async def start_kernel(self):
         """Start a new kernel"""
         self.log.debug("Parent connection file: %s", self.parent.connection_file)
         base, ext = os.path.splitext(self.parent.connection_file)
@@ -232,7 +244,7 @@ class Proxy(Kernel):
             connection_file=cf,
             parent=self,
         )
-        manager.start_kernel()
+        await manager.start_kernel()
         self.kernel = KernelProxy(
             manager=manager,
             shell_upstream=self.shell_stream,
@@ -240,10 +252,10 @@ class Proxy(Kernel):
         self.iosub.connect(self.kernel.iopub_url)
         return [self.kernel]
 
-    def get_kernel(self):
+    async def get_kernel(self):
         """Get a kernel, start it if it doesn't exist"""
         if self.kernel is None:
-            self.start_kernel()
+            await self.start_kernel()
         return self.kernel
 
     def set_parent(self, ident, parent, channel="shell"):
@@ -271,20 +283,20 @@ class Proxy(Kernel):
         if data.startswith("exec "):
             exec(data[4:].lstrip())
         if data.startswith("debug "):
-            if self.MH is not None:
-                self.log.addHandler(self.MH())
-                self.MH = None
+            if self.MessageHandler is not None:
+                self.log.addHandler(self.MessageHandler())
+                self.MessageHandler = None
             requested_level = data[5:].strip()
             try:
                 level = getattr(logging, requested_level)
                 self.log.setLevel(level)
-            except:
+            except Exception:
                 self.log.error("No level %s", requested_level)
 
     def print(self, *arg):
         self.hook(arg)
 
-    def intercept_kernel(self, stream, ident, parent):
+    async def intercept_kernel(self, stream, ident, parent):
 
         self.hook.set_parent(parent)
 
@@ -302,12 +314,12 @@ class Proxy(Kernel):
             parent["content"]["code"] = ""
             parent["content"]["silent"] = True
 
-        self.relay_to_kernel(stream, ident, parent)
+        await self.relay_to_kernel(stream, ident, parent)
 
         if cell == "%restart":
             try:
                 self.log.debug("Sending restart request to kernel manager")
-                self.kernel.manager.shutdown_kernel(now=False, restart=True)
+                await self.kernel.manager.shutdown_kernel(now=False, restart=True)
                 self.log.debug("Setting Kernel to None")
                 self.kernel = None
             except Exception as e:
@@ -315,7 +327,7 @@ class Proxy(Kernel):
 
                 raise
 
-    def relay_to_kernel(self, stream, ident, parent):
+    async def relay_to_kernel(self, stream, ident, parent):
         """Relay a message to a kernel
 
         Gets the `>kernel` line off of the cell,
@@ -323,7 +335,7 @@ class Proxy(Kernel):
         then relays the request.
         """
 
-        kernel = self.get_kernel()
+        kernel = await self.get_kernel()
         self.log.debug(
             "Relaying %s to %s",
             parent["header"]["msg_type"],
@@ -337,7 +349,11 @@ class Proxy(Kernel):
 
     def do_shutdown(self, restart):
         if self.kernel:  # give up if just restarted and not yes up.
-            self.kernel.manager.shutdown_kernel(now=False, restart=restart)
+            loop = IOLoop.current()
+            asyncio.run_coroutine_threadsafe(
+                self.kernel.manager.shutdown_kernel(now=False, restart=restart),
+                loop.asyncio_loop,
+            )
         return super().do_shutdown(restart)
 
 
@@ -400,6 +416,9 @@ def _list(specs):
     m = {"Installed": [], "Installable": [], "Unknown": [], "Remote-Inplace": []}
     for name, path in specs.items():
         path = Path(path) / "kernel.json"
+        if not path.exists():
+            print(f"{path} does not exists ({name})")
+            continue
         data = json.loads(path.read_text())
 
         status = installed(data)
@@ -506,8 +525,8 @@ def remove_from(name, specs):
 
 def wiz(specs):
     from prompt_toolkit.application.current import get_app
-    from prompt_toolkit.shortcuts.dialogs import _create_app
     from prompt_toolkit.layout.containers import HSplit
+    from prompt_toolkit.shortcuts.dialogs import _create_app
     from prompt_toolkit.widgets import Button, CheckboxList, Dialog, Label
 
     def checkboxlist_dialog(
